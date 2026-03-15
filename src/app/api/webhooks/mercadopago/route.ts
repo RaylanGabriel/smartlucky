@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
+type MercadoPagoWebhook = {
+  id?: string | number;
+  type?: string;
+  action?: string;
+  data?: { id?: number | string };
+};
+
 async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: string) {
   try {
     const BREVO_API_KEY = process.env.BREVO_API_KEY;
@@ -52,72 +59,73 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const paymentid = body.data?.id || body.id;
+    const body = (await request.json()) as MercadoPagoWebhook;
+    const paymentid = body.data?.id ?? body.id;
 
-    if (paymentid) {
-      const response = await fetch(
-        `https://api.mercadopago.com/v1/payments/${paymentid}`,
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
-          },
+    if (!paymentid) {
+      console.warn("Webhook recebido sem payment id", body);
+      return NextResponse.json({ message: "Webhook sem id" }, { status: 400 });
+    }
+
+    const response = await fetch(
+      `https://api.mercadopago.com/v1/payments/${paymentid}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
         },
-      );
+      },
+    );
 
-      if (response.ok) {
-        const paymentData = await response.json();
-        let statusTraduzido = paymentData.status;
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      console.error("Erro ao buscar pagamento MP:", response.status, errorBody);
+      return NextResponse.json({ message: "Erro ao consultar pagamento" }, { status: response.status === 401 ? 401 : 500 });
+    }
 
-        
-        if (paymentData.status === "approved") {
-          statusTraduzido = "pago";
-        } else if (paymentData.status === "pending") {
-          statusTraduzido = "pendente";
-        } else if (paymentData.status === "rejected") {
-          statusTraduzido = "recusado";
-        } else if (paymentData.status === "in_process") {
-          statusTraduzido = "em_processamento";
-        }
+    const paymentData = await response.json();
+    let statusTraduzido = paymentData.status;
 
-        // 1. Atualiza o banco de dados
-        // Importante: .select() no final para pegarmos o email e números que já estavam salvos
-        const { data: updatedRifas, error } = await supabase
-          .from("rifas")
-          .update({
-            status: statusTraduzido,
-            payment_info: paymentData,
-          })
-          .eq("payment_id", String(paymentid))
-          .select("email, numero_escolhido, numeros, status");
+    if (paymentData.status === "approved") {
+      statusTraduzido = "pago";
+    } else if (paymentData.status === "pending") {
+      statusTraduzido = "pendente";
+    } else if (paymentData.status === "rejected") {
+      statusTraduzido = "recusado";
+    } else if (paymentData.status === "in_process") {
+      statusTraduzido = "em_processamento";
+    }
 
-        if (error) {
-          console.error("Erro Supabase:", error);
-          return NextResponse.json({ message: "Erro no banco" }, { status: 500 });
-        }
+    const { data: updatedRifas, error } = await supabase
+      .from("rifas")
+      .update({
+        status: statusTraduzido,
+        payment_info: paymentData,
+      })
+      .eq("payment_id", String(paymentid))
+      .select("email, numero_escolhido, numeros");
 
-        // updatedRifas pode ser um array (vários números reservados com mesmo payment_id)
-        if (updatedRifas && Array.isArray(updatedRifas) && updatedRifas.length > 0) {
-          const first = updatedRifas[0];
-          const email = first.email;
+    if (error) {
+      console.error("Erro Supabase:", error);
+      return NextResponse.json({ message: "Erro no banco" }, { status: 500 });
+    }
 
-          // Extrai números: prioriza `numero_escolhido`, senão tenta `numeros`
-          const numerosExtraidos: unknown[] = updatedRifas.flatMap((r: { numero_escolhido?: unknown; numeros?: unknown }) => {
-            if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) return [r.numero_escolhido];
-            if (r.numeros !== undefined && r.numeros !== null) return Array.isArray(r.numeros) ? r.numeros : [r.numeros];
-            return [];
-          });
+    if (updatedRifas && Array.isArray(updatedRifas) && updatedRifas.length > 0) {
+      const first = updatedRifas[0];
+      const email = first.email;
+      const numerosExtraidos: unknown[] = updatedRifas.flatMap((r: { numero_escolhido?: unknown; numeros?: unknown }) => {
+        if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) return [r.numero_escolhido];
+        if (r.numeros !== undefined && r.numeros !== null) return Array.isArray(r.numeros) ? r.numeros : [r.numeros];
+        return [];
+      });
 
-          if (statusTraduzido === "pago" && email) {
-            enviarEmailBrevo(email, numerosExtraidos, String(paymentid));
-          }
-        }
+      if (statusTraduzido === "pago" && email) {
+        await enviarEmailBrevo(email, numerosExtraidos, String(paymentid));
       }
     }
 
     return NextResponse.json({ message: "Recebido" }, { status: 200 });
   } catch (err) {
     console.error("Erro Webhook:", err);
-    return NextResponse.json({ message: "Erro interno" }, { status: 200 });
+    return NextResponse.json({ message: "Erro interno" }, { status: 500 });
   }
 }
