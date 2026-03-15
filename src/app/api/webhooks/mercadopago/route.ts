@@ -59,7 +59,34 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as MercadoPagoWebhook;
+    const bodyText = await request.text();
+    console.log("Webhook raw body:", bodyText);
+
+    let body: MercadoPagoWebhook | null = null;
+    try {
+      body = JSON.parse(bodyText) as MercadoPagoWebhook;
+    } catch (parseError) {
+      console.warn("Webhook JSON inválido, aplicando parser fallback", parseError);
+      const idFromData = bodyText.match(/data\s*:\s*\{[^}]*id\s*:\s*"?([0-9]+)"?/);
+      const idFromRoot = bodyText.match(/\bid\s*:\s*"?([0-9]+)"?/);
+      const typeMatch = bodyText.match(/\btype\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
+      const actionMatch = bodyText.match(/\baction\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
+      const parsedId = idFromData?.[1] ?? idFromRoot?.[1];
+      if (parsedId) {
+        body = {
+          id: parsedId,
+          type: typeMatch?.[1],
+          action: actionMatch?.[1],
+          data: { id: parsedId },
+        };
+      }
+    }
+
+    if (!body) {
+      console.error("Webhook não pôde ser parseado", bodyText);
+      return NextResponse.json({ message: "JSON inválido" }, { status: 400 });
+    }
+
     const paymentid = body.data?.id ?? body.id;
 
     if (!paymentid) {
@@ -102,7 +129,7 @@ export async function POST(request: Request) {
         payment_info: paymentData,
       })
       .eq("payment_id", String(paymentid))
-      .select("email, numero_escolhido, numeros");
+      .select("email, numero_escolhido");
 
     if (error) {
       console.error("Erro Supabase:", error);
@@ -112,9 +139,8 @@ export async function POST(request: Request) {
     if (updatedRifas && Array.isArray(updatedRifas) && updatedRifas.length > 0) {
       const first = updatedRifas[0];
       const email = first.email;
-      const numerosExtraidos: unknown[] = updatedRifas.flatMap((r: { numero_escolhido?: unknown; numeros?: unknown }) => {
+      const numerosExtraidos: unknown[] = updatedRifas.flatMap((r: { numero_escolhido?: unknown }) => {
         if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) return [r.numero_escolhido];
-        if (r.numeros !== undefined && r.numeros !== null) return Array.isArray(r.numeros) ? r.numeros : [r.numeros];
         return [];
       });
 
