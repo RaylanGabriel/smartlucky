@@ -63,28 +63,30 @@ export async function POST(request: Request) {
     console.log("Webhook raw body:", bodyText);
 
     let body: MercadoPagoWebhook | null = null;
-    try {
-      body = JSON.parse(bodyText) as MercadoPagoWebhook;
-    } catch (parseError) {
-      console.warn("Webhook JSON inválido, aplicando parser fallback", parseError);
-      const idFromData = bodyText.match(/data\s*:\s*\{[^}]*id\s*:\s*"?([0-9]+)"?/);
-      const idFromRoot = bodyText.match(/\bid\s*:\s*"?([0-9]+)"?/);
-      const typeMatch = bodyText.match(/\btype\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
-      const actionMatch = bodyText.match(/\baction\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
-      const parsedId = idFromData?.[1] ?? idFromRoot?.[1];
-      if (parsedId) {
-        body = {
-          id: parsedId,
-          type: typeMatch?.[1],
-          action: actionMatch?.[1],
-          data: { id: parsedId },
-        };
+    if (bodyText.trim().length > 0) {
+      try {
+        body = JSON.parse(bodyText) as MercadoPagoWebhook;
+      } catch {
+        // Mercado Pago sometimes sends pseudo-JSON (no quotes). Extraia o id diretamente.
+        const idFromData = bodyText.match(/data\s*:\s*\{[^}]*id\s*:\s*"?([0-9]+)"?/);
+        const idFromRoot = bodyText.match(/\bid\s*:\s*"?([0-9]+)"?/);
+        const typeMatch = bodyText.match(/\btype\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
+        const actionMatch = bodyText.match(/\baction\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
+        const parsedId = idFromData?.[1] ?? idFromRoot?.[1];
+        if (parsedId) {
+          body = {
+            id: parsedId,
+            type: typeMatch?.[1],
+            action: actionMatch?.[1],
+            data: { id: parsedId },
+          };
+        }
       }
     }
 
     if (!body) {
-      console.error("Webhook não pôde ser parseado", bodyText);
-      return NextResponse.json({ message: "JSON inválido" }, { status: 400 });
+      console.warn("Webhook payload vazio ou inválido:", bodyText);
+      return NextResponse.json({ message: "Webhook inválido" }, { status: 400 });
     }
 
     const paymentid = body.data?.id ?? body.id;
