@@ -144,6 +144,7 @@ async function processarWebhookEmBackground(paymentid: string) {
     
     let response;
     try {
+      console.log("Iniciando fetch para API MP...");
       response = await fetch(
         `https://api.mercadopago.com/v1/payments/${paymentid}`,
         {
@@ -153,31 +154,36 @@ async function processarWebhookEmBackground(paymentid: string) {
           signal: controller.signal,
         }
       );
+      console.log("✅ Fetch completado. Status HTTP:", response.status);
+    } catch (fetchError) {
+      console.error("❌ Erro ao fazer fetch para MP:", fetchError instanceof Error ? fetchError.message : String(fetchError));
+      return;
     } finally {
       clearTimeout(timeoutId);
     }
 
     if (!response.ok) {
+      console.error("❌ Resposta não OK. Status:", response.status);
       const errorBody = await response.json().catch(() => ({}));
-      console.error("Erro ao buscar pagamento MP:", {
-        status: response.status,
-        error: errorBody,
-      });
+      console.error("Erro body:", errorBody);
       return;
     }
 
+    console.log("Parseando resposta JSON...");
     const paymentData = await response.json();
     console.log("Status retornado do MP:", paymentData.status);
+    console.log("Payment data:", JSON.stringify(paymentData).substring(0, 300));
 
     // ✅ VERIFICAR STATUS
     if (paymentData.status !== "approved") {
-      console.log("Pagamento não aprovado - status:", paymentData.status);
+      console.log("⏸️ Pagamento não aprovado - status:", paymentData.status);
       return;
     }
 
-    console.log("Status OK - Atualizando banco...");
+    console.log("✅ Status aprovado - Atualizando banco...");
 
     // ✅ ATUALIZAR BANCO
+    console.log("Executando update no Supabase...");
     const { data: updatedRifas, error } = await supabase
       .from("rifas")
       .update({
@@ -188,14 +194,14 @@ async function processarWebhookEmBackground(paymentid: string) {
       .select("email, numero_escolhido, id");
 
     if (error) {
-      console.error("Erro Supabase:", {
+      console.error("❌ Erro Supabase:", {
         code: error.code,
         message: error.message,
       });
       return;
     }
 
-    console.log("Atualizadas:", updatedRifas?.length ?? 0, "linhas");
+    console.log("✅ Update executado. Linhas afetadas:", updatedRifas?.length ?? 0);
 
     // ✅ ENVIAR EMAIL
     if (updatedRifas && updatedRifas.length > 0) {
@@ -215,9 +221,12 @@ async function processarWebhookEmBackground(paymentid: string) {
     }
 
     const totalTime = Date.now() - startTime;
-    console.log(`=== WEBHOOK PROCESSADO COM SUCESSO (${totalTime}ms) ===`);
+    console.log(`✅ WEBHOOK PROCESSADO COM SUCESSO (${totalTime}ms)`);
 
   } catch (err) {
-    console.error("Erro crítico ao processar webhook:", err);
+    console.error("❌ Erro crítico ao processar webhook:", err);
+    if (err instanceof Error) {
+      console.error("Stack:", err.stack);
+    }
   }
 }
