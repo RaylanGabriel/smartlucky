@@ -138,135 +138,106 @@ async function processarWebhookEmBackground(paymentid: string) {
 
     // ✅ BUSCAR STATUS NO MERCADO PAGO
     console.log("Consultando Mercado Pago para ID:", paymentid);
+    console.log("Token presente:", !!process.env.MP_ACCESS_TOKEN);
     
+    const url = `https://api.mercadopago.com/v1/payments/${paymentid}`;
+
     let response;
     try {
-      console.log("⏳ Iniciando fetch para API MP (com timeout de 5s)...");
+      console.log("⏳ Enviando fetch simples...");
       
-      // Usar Promise.race para timeout mais confiável
-      const fetchPromise = fetch(
-        `https://api.mercadopago.com/v1/payments/${paymentid}`,
-        {
-          method: "GET",
-          headers: {
-            "Authorization": `Bearer ${process.env.MP_ACCESS_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      // Criar timeout promise
-      const timeoutPromise = new Promise<Response>((_, reject) => {
-        setTimeout(() => {
-          console.error("⏱️ TIMEOUT! Fetch excedeu 5 segundos");
-          reject(new Error("FETCH_TIMEOUT"));
-        }, 5000);
+      response = await fetch(url, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
       });
-
-      // Race entre fetch e timeout
-      response = await Promise.race([fetchPromise, timeoutPromise]);
-      console.log("✅ Fetch completado. Status HTTP:", response.status);
+      
+      console.log("✅ Resposta recebida!");
+      console.log("Status HTTP:", response.status);
       
     } catch (fetchError) {
       const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
-      console.error("❌ Erro ao fazer fetch para MP:", errorMsg);
+      console.error("❌ Erro no fetch:", errorMsg);
       return;
     }
 
     if (!response.ok) {
-      console.error("❌ Resposta não OK. Status:", response.status);
-      try {
-        const errorBody = await response.json();
-        console.error("Error body:", JSON.stringify(errorBody));
-      } catch {
-        const text = await response.text();
-        console.error("Error text:", text.substring(0, 200));
-      }
+      console.error("❌ Status não OK:", response.status);
       return;
     }
 
-    console.log("📦 Parseando resposta JSON...");
+    console.log("📦 Extraindo texto da resposta...");
+    const text = await response.text();
+    console.log("✅ Texto extraído. Comprimento:", text.length);
+    
+    console.log("📦 Parseando JSON...");
     let paymentData;
     try {
-      paymentData = await response.json();
-      console.log("✅ JSON parseado com sucesso");
+      paymentData = JSON.parse(text);
+      console.log("✅ JSON parseado!");
     } catch (parseError) {
-      console.error("❌ Erro ao parsear JSON:", parseError instanceof Error ? parseError.message : String(parseError));
+      const msg = parseError instanceof Error ? parseError.message : String(parseError);
+      console.error("❌ Erro ao parsear JSON:", msg);
       return;
     }
     
-    console.log("📊 Status retornado do MP:", paymentData.status);
+    console.log("📊 Status do pagamento:", paymentData.status);
 
     // ✅ VERIFICAR STATUS
     if (paymentData.status !== "approved") {
-      console.log("⏸️ Pagamento não aprovado - status:", paymentData.status);
+      console.log("⏸️ Status não é 'approved'. Atual:", paymentData.status);
       return;
     }
 
-    console.log("✅ Status aprovado - Atualizando banco...");
+    console.log("✅ Status é APPROVED! Atualizando banco...");
+    console.log("Update: status='pago', payment_id='" + paymentid + "'");
 
-    // ✅ ATUALIZAR BANCO
-    console.log("Executando update no Supabase para payment_id:", paymentid);
-    
-    try {
-      const { data: updatedRifas, error } = await supabase
-        .from("rifas")
-        .update({
-          status: "pago",
-          payment_info: paymentData,
-        })
-        .eq("payment_id", paymentid)
-        .select("email, numero_escolhido, id");
+    const { data: updatedRifas, error } = await supabase
+      .from("rifas")
+      .update({
+        status: "pago",
+        payment_info: paymentData,
+      })
+      .eq("payment_id", paymentid)
+      .select("email, numero_escolhido, id");
 
-      if (error) {
-        console.error("❌ Erro Supabase:", {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-        });
-        return;
-      }
-
-      console.log("✅ Update executado com sucesso");
-      console.log("✅ Linhas afetadas:", updatedRifas?.length ?? 0);
-      
-      if (updatedRifas && updatedRifas.length > 0) {
-        console.log("✅ Dados retornados:", JSON.stringify(updatedRifas).substring(0, 300));
-      } else {
-        console.warn("⚠️ Nenhuma linha foi atualizada - payment_id pode não existir no banco");
-      }
-
-      // ✅ ENVIAR EMAIL
-      if (updatedRifas && updatedRifas.length > 0) {
-        const email = updatedRifas[0].email;
-        console.log("📧 Enviando email para:", email);
-
-        const numerosExtraidos: unknown[] = updatedRifas.flatMap(
-          (r: { numero_escolhido?: unknown }) => {
-            if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) {
-              return [r.numero_escolhido];
-            }
-            return [];
-          }
-        );
-
-        console.log("Números extraídos:", numerosExtraidos);
-        await enviarEmailBrevo(email, numerosExtraidos, paymentid);
-      }
-    } catch (supabaseError) {
-      console.error("❌ Erro crítico ao atualizar Supabase:", supabaseError instanceof Error ? supabaseError.message : String(supabaseError));
-      if (supabaseError instanceof Error) {
-        console.error("Stack:", supabaseError.stack);
-      }
+    if (error) {
+      console.error("❌ Erro Supabase:", error.message);
       return;
+    }
+
+    const linhasAtualizadas = updatedRifas?.length ?? 0;
+    console.log(`✅ Sucesso! ${linhasAtualizadas} linhas atualizadas`);
+
+    // ✅ ENVIAR EMAIL
+    if (updatedRifas && updatedRifas.length > 0) {
+      const email = updatedRifas[0].email;
+      const numerosExtraidos: unknown[] = updatedRifas.flatMap(
+        (r: { numero_escolhido?: unknown }) => {
+          if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) {
+            return [r.numero_escolhido];
+          }
+          return [];
+        }
+      );
+
+      console.log("📧 Enviando email para:", email);
+      try {
+        await enviarEmailBrevo(email, numerosExtraidos, paymentid);
+        console.log("✅ Email enviado!");
+      } catch (emailError) {
+        console.error("⚠️ Erro ao enviar email:", emailError instanceof Error ? emailError.message : String(emailError));
+      }
     }
 
     const totalTime = Date.now() - startTime;
-    console.log(`✅ WEBHOOK PROCESSADO COM SUCESSO (${totalTime}ms)`);
+    console.log(`✅ WEBHOOK SUCESSO (${totalTime}ms)`);
 
   } catch (err) {
-    console.error("❌ Erro crítico ao processar webhook:", err);
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error("❌ ERRO CRÍTICO:", errorMsg);
     if (err instanceof Error) {
       console.error("Stack:", err.stack);
     }
