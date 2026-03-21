@@ -66,82 +66,71 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
 }
 
 export async function POST(request: Request) {
-  const startTime = Date.now();
-  
   try {
-    // LOG INICIAL
     const bodyText = await request.text();
-    console.log("=== WEBHOOK MERCADO PAGO ===");
-    console.log("Timestamp:", new Date().toISOString());
-    console.log("Webhook raw body:", bodyText.substring(0, 200));
-
+    
+    // EXTRAIR PAYMENT ID RAPIDAMENTE
     let body: MercadoPagoWebhook | null = null;
 
     if (bodyText.trim().length > 0) {
       try {
         body = JSON.parse(bodyText);
-        console.log("JSON parseado com sucesso:", JSON.stringify(body).substring(0, 200));
-      } catch (parseError) {
-        console.error("Erro ao parsear JSON:", parseError);
-        console.log("Tentando fallback regex...");
-
+      } catch {
         const idFromData = bodyText.match(/data\s*:\s*\{[^}]*id\s*:\s*"?([0-9]+)"?/);
         const idFromRoot = bodyText.match(/id\s*:\s*"?([0-9]+)"?/);
-        const typeMatch = bodyText.match(/type\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
-        const actionMatch = bodyText.match(/action\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
-
+        
         const parsedId = idFromData?.[1] ?? idFromRoot?.[1];
-
         if (parsedId) {
-          body = {
-            id: parsedId,
-            type: typeMatch?.[1],
-            action: actionMatch?.[1],
-            data: { id: parsedId },
-          };
-          console.log("Fallback regex bem-sucedido:", body);
+          body = { id: parsedId, data: { id: parsedId } };
         }
       }
     }
 
-    if (!body) {
-      console.warn("Webhook inválido - nenhum body encontrado");
-      return NextResponse.json({ message: "Webhook inválido" }, { status: 400 });
-    }
-
-    console.log("Body type:", body.type);
-    console.log("Body action:", body.action);
-
-    // VERIFICAR TIPO
-    if (body.type && body.type !== "payment") {
-      console.log("Evento ignorado - tipo não é payment:", body.type);
-      return NextResponse.json({ message: "Evento ignorado" }, { status: 200 });
-    }
-
-    // EXTRAIR PAYMENT ID COM VALIDAÇÃO
-    let paymentid = body.data?.id ?? body.id;
-    console.log("Payment ID extraído (raw):", paymentid, "tipo:", typeof paymentid);
-
+    // Extrair payment ID
+    let paymentid = body?.data?.id ?? body?.id;
     if (!paymentid) {
-      console.warn("Webhook sem payment_id válido");
-      return NextResponse.json({ message: "Webhook sem id" }, { status: 400 });
+      return NextResponse.json({ message: "Ok" }, { status: 200 });
     }
 
-    // GARANTIR STRING
     paymentid = String(paymentid);
-    console.log("Payment ID (string):", paymentid);
 
-    // VERIFICAR AMBIENTE
+    // ✅ RETORNAR 200 OK IMEDIATAMENTE
+    // Processor everything in background after returning
+    const responsePromise = NextResponse.json({ message: "Ok" }, { status: 200 });
+
+    // ✅ PROCESSAR TUDO EM BACKGROUND (não bloqueia)
+    processarWebhookEmBackground(paymentid).catch((err) => {
+      console.error("Erro ao processar webhook em background:", err);
+    });
+
+    return responsePromise;
+
+  } catch (err) {
+    console.error("Erro crítico no webhook:", err);
+    return NextResponse.json({ message: "Ok" }, { status: 200 });
+  }
+}
+
+// ✅ FUNÇÃO ASSÍNCRONA QUE PROCESSA TUDO EM BACKGROUND
+async function processarWebhookEmBackground(paymentid: string) {
+  const startTime = Date.now();
+  
+  try {
+    console.log("=== WEBHOOK INICIANDO PROCESSAMENTO ===");
+    console.log("Timestamp:", new Date().toISOString());
+    console.log("Payment ID:", paymentid);
+
+    // ✅ VERIFICAR AMBIENTE
     if (!process.env.MP_ACCESS_TOKEN) {
       console.error("ERRO: MP_ACCESS_TOKEN não configurado!");
-      return NextResponse.json({ message: "Servidor não configurado" }, { status: 500 });
+      return;
     }
 
-    // BUSCAR STATUS NO MERCADO PAGO COM TIMEOUT
+    // ✅ BUSCAR STATUS NO MERCADO PAGO
     console.log("Consultando Mercado Pago para ID:", paymentid);
     
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 segundos de timeout
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
     
     let response;
     try {
@@ -164,75 +153,44 @@ export async function POST(request: Request) {
         status: response.status,
         error: errorBody,
       });
-
-      // Se for 404, o arquivo não existe no MP - erro permanente
-      if (response.status === 404) {
-        return NextResponse.json({ message: "Pagamento não encontrado no MP" }, { status: 404 });
-      }
-
-      return NextResponse.json({ message: "Erro ao consultar pagamento" }, { status: 500 });
+      return;
     }
 
     const paymentData = await response.json();
     console.log("Status retornado do MP:", paymentData.status);
-    console.log("Payment data keys:", Object.keys(paymentData).slice(0, 10));
 
-    // VERIFICAR STATUS
+    // ✅ VERIFICAR STATUS
     if (paymentData.status !== "approved") {
-      console.log("Pagamento não aprovado - status atual:", paymentData.status);
-      return NextResponse.json({ message: "Pagamento não aprovado ainda" }, { status: 200 });
+      console.log("Pagamento não aprovado - status:", paymentData.status);
+      return;
     }
 
-    const statusTraduzido = "pago";
-    console.log("Status OK - Atualizando banco com status:", statusTraduzido);
+    console.log("Status OK - Atualizando banco...");
 
-    // QUERY COM .EQ() E LOG DETALHADO
-    console.log("Executando query Supabase com payment_id:", paymentid);
-
+    // ✅ ATUALIZAR BANCO
     const { data: updatedRifas, error } = await supabase
       .from("rifas")
       .update({
-        status: statusTraduzido,
+        status: "pago",
         payment_info: paymentData,
       })
       .eq("payment_id", paymentid)
       .select("email, numero_escolhido, id");
 
-    // LOG DE ERRO DO SUPABASE COM DETALHES
     if (error) {
-      console.error("Erro Supabase completo:", {
+      console.error("Erro Supabase:", {
         code: error.code,
         message: error.message,
-        details: error.details,
-        hint: error.hint,
       });
-      return NextResponse.json({ message: "Erro no banco" }, { status: 500 });
+      return;
     }
 
-    console.log("Resultado da atualização:", {
-      linhasAfetadas: updatedRifas?.length ?? 0,
-      dados: updatedRifas,
-    });
+    console.log("Atualizadas:", updatedRifas?.length ?? 0, "linhas");
 
-    // VERIFICAR SE ATUALIZOU ALGUMA LINHA
-    if (!updatedRifas || updatedRifas.length === 0) {
-      console.warn("AVISO: Nenhuma linha foi atualizada no Supabase para payment_id:", paymentid);
-      console.warn("Possível causa: payment_id não existe no banco ou em formato diferente");
-
-      const elapsed = Date.now() - startTime;
-      console.log(`Tempo total: ${elapsed}ms`);
-      
-      // NÃO faz debug aqui, retorna imediatamente para evitar timeout
-      return NextResponse.json({ message: "Nenhum registro atualizado" }, { status: 200 });
-    }
-
-    const elapsed = Date.now() - startTime;
-    console.log(`Tempo até update: ${elapsed}ms`);
-
-    // ENVIAR EMAIL EM BACKGROUND (não bloqueia a resposta)
+    // ✅ ENVIAR EMAIL
     if (updatedRifas && updatedRifas.length > 0) {
       const email = updatedRifas[0].email;
-      console.log("Agendando envio de email para:", email);
+      console.log("Enviando email para:", email);
 
       const numerosExtraidos: unknown[] = updatedRifas.flatMap(
         (r: { numero_escolhido?: unknown }) => {
@@ -243,23 +201,13 @@ export async function POST(request: Request) {
         }
       );
 
-      if (email) {
-        // Enviar email em background sem bloquear a resposta
-        enviarEmailBrevo(email, numerosExtraidos, paymentid).catch((err) => {
-          console.error("Erro ao enviar email em background:", err);
-        });
-      }
+      await enviarEmailBrevo(email, numerosExtraidos, paymentid);
     }
 
     const totalTime = Date.now() - startTime;
     console.log(`=== WEBHOOK PROCESSADO COM SUCESSO (${totalTime}ms) ===`);
-    return NextResponse.json({ message: "Recebido" }, { status: 200 });
 
   } catch (err) {
-    console.error("Erro Webhook crítico:", err);
-    if (err instanceof Error) {
-      console.error("Stack trace:", err.stack);
-    }
-    return NextResponse.json({ message: "Erro interno" }, { status: 500 });
+    console.error("Erro crítico ao processar webhook:", err);
   }
 }
