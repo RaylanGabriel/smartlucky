@@ -33,6 +33,24 @@ export async function POST(req: Request) {
       process.env.MP_NOTIFICATION_URL ||
       "https://rifa-smartlucky.vercel.app/api/webhooks/mercadopago";
 
+    console.log("=== CREATE-PAYMENT ===");
+    console.log("Notification URL:", notificationUrl);
+    console.log("MP_NOTIFICATION_URL env:", process.env.MP_NOTIFICATION_URL);
+
+    const paymentPayload = {
+      transaction_amount: valorTotal,
+      description: `Rifa SmartLucky - Números: ${numeros.join(", ")}`,
+      payment_method_id: "pix",
+      external_reference: `RIFAS-${Date.now()}`,
+      notification_url: notificationUrl,
+      payer: {
+        email: mail,
+        first_name: nome,
+      },
+    };
+
+    console.log("Payment payload:", JSON.stringify(paymentPayload));
+
     const response = await fetch("https://api.mercadopago.com/v1/payments", {
       method: "POST",
       headers: {
@@ -40,17 +58,7 @@ export async function POST(req: Request) {
         Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
         "X-Idempotency-Key": crypto.randomUUID(),
       },
-      body: JSON.stringify({
-        transaction_amount: valorTotal,
-        description: `Rifa SmartLucky - Números: ${numeros.join(", ")}`,
-        payment_method_id: "pix",
-        external_reference: `RIFAS-${Date.now()}`,
-        notification_url: notificationUrl,
-        payer: {
-          email: mail,
-          first_name: nome,
-        },
-      }),
+      body: JSON.stringify(paymentPayload),
     });
 
     const data = await response.json();
@@ -62,6 +70,11 @@ export async function POST(req: Request) {
         { status: response.status }
       );
     }
+
+    console.log("Payment criado com sucesso:");
+    console.log("ID:", data.id);
+    console.log("Status:", data.status);
+    console.log("Notification URL registrada:", data.notification_url);
 
     return NextResponse.json({
       id: data.id,

@@ -66,8 +66,16 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
 }
 
 export async function POST(request: Request) {
+  // ✅ LOG IMEDIATO - PRIMEIRA COISA
+  console.log("🔔 [WEBHOOK RECEBIDO]", new Date().toISOString());
+  console.log("URL:", request.url);
+  console.log("Method:", request.method);
+  
   try {
     const bodyText = await request.text();
+    
+    console.log("Body length:", bodyText.length);
+    console.log("Body preview:", bodyText.substring(0, 150));
     
     // EXTRAIR PAYMENT ID RAPIDAMENTE
     let body: MercadoPagoWebhook | null = null;
@@ -89,10 +97,12 @@ export async function POST(request: Request) {
     // Extrair payment ID
     let paymentid = body?.data?.id ?? body?.id;
     if (!paymentid) {
+      console.log("⚠️ [WEBHOOK] Sem payment ID");
       return NextResponse.json({ message: "Ok" }, { status: 200 });
     }
 
     paymentid = String(paymentid);
+    console.log(`✅ [WEBHOOK] Payment ID: ${paymentid}`);
 
     // ✅ RETORNAR 200 OK IMEDIATAMENTE
     // Processor everything in background after returning
