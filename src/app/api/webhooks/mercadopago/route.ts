@@ -143,8 +143,17 @@ async function processarWebhookEmBackground(paymentid: string) {
     const url = `https://api.mercadopago.com/v1/payments/${paymentid}`;
 
     let response;
+    let fetchError: Error | null = null;
+    
+    // Usar AbortController com timeout
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      console.error("⏱️ ABORT ACIONADO - Timeout de 4s");
+      controller.abort();
+    }, 4000);
+
     try {
-      console.log("⏳ Enviando fetch simples...");
+      console.log("⏳ Iniciando fetch com AbortController...");
       
       response = await fetch(url, {
         method: "GET",
@@ -152,19 +161,35 @@ async function processarWebhookEmBackground(paymentid: string) {
           Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
           "Content-Type": "application/json",
         },
+        signal: controller.signal,
       });
       
-      console.log("✅ Resposta recebida!");
-      console.log("Status HTTP:", response.status);
+      clearTimeout(timeoutHandle);
+      console.log("✅ Resposta recebida! Status:", response.status);
       
-    } catch (fetchError) {
-      const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
-      console.error("❌ Erro no fetch:", errorMsg);
+    } catch (error) {
+      clearTimeout(timeoutHandle);
+      
+      if (error instanceof Error) {
+        console.error("❌ Fetch error name:", error.name);
+        console.error("❌ Fetch error message:", error.message);
+        fetchError = error;
+      } else {
+        console.error("❌ Fetch erro desconhecido:", error);
+        fetchError = new Error(String(error));
+      }
+      
+      // Se foi abort, significa timeout
+      if (fetchError?.name === "AbortError") {
+        console.error("⏱️ Fetch foi abortado (timeout provavelmente)");
+      }
+      
       return;
     }
 
-    if (!response.ok) {
-      console.error("❌ Status não OK:", response.status);
+    if (!response || !response.ok) {
+      const status = response?.status ?? "unknown";
+      console.error("❌ Response não OK. Status:", status);
       return;
     }
 
