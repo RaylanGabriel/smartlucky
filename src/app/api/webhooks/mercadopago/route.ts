@@ -139,40 +139,66 @@ async function processarWebhookEmBackground(paymentid: string) {
     // ✅ BUSCAR STATUS NO MERCADO PAGO
     console.log("Consultando Mercado Pago para ID:", paymentid);
     
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-    
     let response;
     try {
       console.log("Iniciando fetch para API MP...");
+      
+      // Usar timeout mais agressivo
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.error("⏱️ TIMEOUT - Abortando fetch após 8 segundos");
+        controller.abort();
+      }, 8000);
+      
       response = await fetch(
         `https://api.mercadopago.com/v1/payments/${paymentid}`,
         {
+          method: "GET",
           headers: {
-            Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+            "Authorization": `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+            "Content-Type": "application/json",
           },
           signal: controller.signal,
         }
       );
-      console.log("✅ Fetch completado. Status HTTP:", response.status);
-    } catch (fetchError) {
-      console.error("❌ Erro ao fazer fetch para MP:", fetchError instanceof Error ? fetchError.message : String(fetchError));
-      return;
-    } finally {
+      
       clearTimeout(timeoutId);
+      console.log("✅ Fetch completado. Status HTTP:", response.status);
+      
+    } catch (fetchError) {
+      const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
+      console.error("❌ Erro ao fazer fetch para MP:", errorMsg);
+      
+      // Se foi abortado, retorna
+      if (errorMsg.includes("abort")) {
+        console.error("❌ Fetch foi abortado - possível timeout");
+      }
+      return;
     }
 
     if (!response.ok) {
       console.error("❌ Resposta não OK. Status:", response.status);
-      const errorBody = await response.json().catch(() => ({}));
-      console.error("Erro body:", errorBody);
+      try {
+        const errorBody = await response.json();
+        console.error("Error body:", JSON.stringify(errorBody));
+      } catch {
+        const text = await response.text();
+        console.error("Error text:", text.substring(0, 200));
+      }
       return;
     }
 
     console.log("Parseando resposta JSON...");
-    const paymentData = await response.json();
+    let paymentData;
+    try {
+      paymentData = await response.json();
+      console.log("✅ JSON parseado com sucesso");
+    } catch (parseError) {
+      console.error("❌ Erro ao parsear JSON:", parseError instanceof Error ? parseError.message : String(parseError));
+      return;
+    }
+    
     console.log("Status retornado do MP:", paymentData.status);
-    console.log("Payment data:", JSON.stringify(paymentData).substring(0, 300));
 
     // ✅ VERIFICAR STATUS
     if (paymentData.status !== "approved") {
@@ -183,41 +209,60 @@ async function processarWebhookEmBackground(paymentid: string) {
     console.log("✅ Status aprovado - Atualizando banco...");
 
     // ✅ ATUALIZAR BANCO
-    console.log("Executando update no Supabase...");
-    const { data: updatedRifas, error } = await supabase
-      .from("rifas")
-      .update({
-        status: "pago",
-        payment_info: paymentData,
-      })
-      .eq("payment_id", paymentid)
-      .select("email, numero_escolhido, id");
+    console.log("Executando update no Supabase para payment_id:", paymentid);
+    
+    try {
+      const { data: updatedRifas, error } = await supabase
+        .from("rifas")
+        .update({
+          status: "pago",
+          payment_info: paymentData,
+        })
+        .eq("payment_id", paymentid)
+        .select("email, numero_escolhido, id");
 
-    if (error) {
-      console.error("❌ Erro Supabase:", {
-        code: error.code,
-        message: error.message,
-      });
-      return;
-    }
+      if (error) {
+        console.error("❌ Erro Supabase:", {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+        });
+        return;
+      }
 
-    console.log("✅ Update executado. Linhas afetadas:", updatedRifas?.length ?? 0);
+      console.log("✅ Update executado com sucesso");
+      console.log("✅ Linhas afetadas:", updatedRifas?.length ?? 0);
+      
+      if (updatedRifas && updatedRifas.length > 0) {
+        console.log("✅ Dados retornados:", JSON.stringify(updatedRifas).substring(0, 300));
+      } else {
+        console.warn("⚠️ Nenhuma linha foi atualizada - payment_id pode não existir no banco");
+      }
 
-    // ✅ ENVIAR EMAIL
-    if (updatedRifas && updatedRifas.length > 0) {
-      const email = updatedRifas[0].email;
-      console.log("Enviando email para:", email);
+      // ✅ ENVIAR EMAIL
+      if (updatedRifas && updatedRifas.length > 0) {
+        const email = updatedRifas[0].email;
+        console.log("📧 Enviando email para:", email);
 
-      const numerosExtraidos: unknown[] = updatedRifas.flatMap(
-        (r: { numero_escolhido?: unknown }) => {
-          if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) {
-            return [r.numero_escolhido];
+        const numerosExtraidos: unknown[] = updatedRifas.flatMap(
+          (r: { numero_escolhido?: unknown }) => {
+            if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) {
+              return [r.numero_escolhido];
+            }
+            return [];
           }
-          return [];
-        }
-      );
+        );
 
-      await enviarEmailBrevo(email, numerosExtraidos, paymentid);
+        console.log("Números extraídos:", numerosExtraidos);
+        await enviarEmailBrevo(email, numerosExtraidos, paymentid);
+      }
+    } catch (supabaseError) {
+      console.error("❌ Erro crítico ao atualizar Supabase:", supabaseError instanceof Error ? supabaseError.message : String(supabaseError));
+      if (supabaseError instanceof Error) {
+        console.error("Stack:", supabaseError.stack);
+      }
+      return;
     }
 
     const totalTime = Date.now() - startTime;
