@@ -168,9 +168,22 @@ export async function GET(request: Request) {
 
         // Extract email and payment numbers
         const email = paymentData.payer?.email || rifaData?.email;
-        const numeros = rifaData?.numero_escolhido
-          ? rifaData.numero_escolhido.split(",").map((n: string) => n.trim())
-          : [];
+        let numeros: string[] = [];
+        
+        if (rifaData?.numero_escolhido) {
+          // Handle both string and array formats
+          if (typeof rifaData.numero_escolhido === "string") {
+            numeros = rifaData.numero_escolhido
+              .split(",")
+              .map((n: string) => n.trim());
+          } else if (Array.isArray(rifaData.numero_escolhido)) {
+            numeros = rifaData.numero_escolhido.map((n: unknown) => 
+              typeof n === "string" ? n : String(n)
+            );
+          } else {
+            numeros = [String(rifaData.numero_escolhido)];
+          }
+        }
 
         // Send confirmation email
         if (email) {
