@@ -66,16 +66,10 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
 }
 
 export async function POST(request: Request) {
-  // ✅ LOG IMEDIATO - PRIMEIRA COISA
-  console.log("🔔 [WEBHOOK RECEBIDO]", new Date().toISOString());
-  console.log("URL:", request.url);
-  console.log("Method:", request.method);
+  console.log("🔔 WEBHOOK recebido");
   
   try {
     const bodyText = await request.text();
-    
-    console.log("Body length:", bodyText.length);
-    console.log("Body preview:", bodyText.substring(0, 150));
     
     // EXTRAIR PAYMENT ID RAPIDAMENTE
     let body: MercadoPagoWebhook | null = null;
@@ -85,186 +79,53 @@ export async function POST(request: Request) {
         body = JSON.parse(bodyText);
       } catch {
         const idFromData = bodyText.match(/data\s*:\s*\{[^}]*id\s*:\s*"?([0-9]+)"?/);
-        const idFromRoot = bodyText.match(/id\s*:\s*"?([0-9]+)"?/);
-        
-        const parsedId = idFromData?.[1] ?? idFromRoot?.[1];
+        const parsedId = idFromData?.[1];
         if (parsedId) {
           body = { id: parsedId, data: { id: parsedId } };
         }
       }
     }
 
-    // Extrair payment ID
-    let paymentid = body?.data?.id ?? body?.id;
+    const paymentid = body?.data?.id ?? body?.id;
     if (!paymentid) {
-      console.log("⚠️ [WEBHOOK] Sem payment ID");
       return NextResponse.json({ message: "Ok" }, { status: 200 });
     }
 
-    paymentid = String(paymentid);
-    console.log(`✅ [WEBHOOK] Payment ID: ${paymentid}`);
+    console.log("Payment ID:", String(paymentid));
 
-    // ✅ RETORNAR 200 OK IMEDIATAMENTE
-    // Processor everything in background after returning
-    const responsePromise = NextResponse.json({ message: "Ok" }, { status: 200 });
+    // ✅ SALVAR NA FILA (NÃO PROCESSA AQUI)
+    const queueEntry = {
+      payment_id: String(paymentid),
+      status: "pending",
+      created_at: new Date().toISOString(),
+      attempts: 0,
+    };
+    
+    console.log("Salvando na fila...");
+    const { error: queueError } = await supabase
+      .from("webhook_queue")
+      .upsert(queueEntry, { onConflict: "payment_id" });
 
-    // ✅ PROCESSAR TUDO EM BACKGROUND (não bloqueia)
-    processarWebhookEmBackground(paymentid).catch((err) => {
-      console.error("Erro ao processar webhook em background:", err);
-    });
+    if (queueError) {
+      console.error("❌ Erro ao salvar na fila:", queueError.message);
+      // Mesmo com erro, retorna 200 para MP não retentar
+      return NextResponse.json({ message: "Ok" }, { status: 200 });
+    }
 
-    return responsePromise;
+    console.log("✅ Salvo na fila para processar");
+    return NextResponse.json({ message: "Ok" }, { status: 200 });
 
   } catch (err) {
-    console.error("Erro crítico no webhook:", err);
+    console.error("Erro no webhook:", err);
     return NextResponse.json({ message: "Ok" }, { status: 200 });
   }
 }
 
-// ✅ FUNÇÃO ASSÍNCRONA QUE PROCESSA TUDO EM BACKGROUND
-async function processarWebhookEmBackground(paymentid: string) {
-  const startTime = Date.now();
-  
-  try {
-    console.log("=== WEBHOOK INICIANDO PROCESSAMENTO ===");
-    console.log("Timestamp:", new Date().toISOString());
-    console.log("Payment ID:", paymentid);
-
-    // ✅ VERIFICAR AMBIENTE
-    if (!process.env.MP_ACCESS_TOKEN) {
-      console.error("ERRO: MP_ACCESS_TOKEN não configurado!");
-      return;
-    }
-
-    // ✅ BUSCAR STATUS NO MERCADO PAGO
-    console.log("Consultando Mercado Pago para ID:", paymentid);
-    console.log("Token presente:", !!process.env.MP_ACCESS_TOKEN);
-    
-    const url = `https://api.mercadopago.com/v1/payments/${paymentid}`;
-
-    let response;
-    let fetchError: Error | null = null;
-    
-    // Usar AbortController com timeout
-    const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => {
-      console.error("⏱️ ABORT ACIONADO - Timeout de 4s");
-      controller.abort();
-    }, 4000);
-
-    try {
-      console.log("⏳ Iniciando fetch com AbortController...");
-      
-      response = await fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        signal: controller.signal,
-      });
-      
-      clearTimeout(timeoutHandle);
-      console.log("✅ Resposta recebida! Status:", response.status);
-      
-    } catch (error) {
-      clearTimeout(timeoutHandle);
-      
-      if (error instanceof Error) {
-        console.error("❌ Fetch error name:", error.name);
-        console.error("❌ Fetch error message:", error.message);
-        fetchError = error;
-      } else {
-        console.error("❌ Fetch erro desconhecido:", error);
-        fetchError = new Error(String(error));
-      }
-      
-      // Se foi abort, significa timeout
-      if (fetchError?.name === "AbortError") {
-        console.error("⏱️ Fetch foi abortado (timeout provavelmente)");
-      }
-      
-      return;
-    }
-
-    if (!response || !response.ok) {
-      const status = response?.status ?? "unknown";
-      console.error("❌ Response não OK. Status:", status);
-      return;
-    }
-
-    console.log("📦 Extraindo texto da resposta...");
-    const text = await response.text();
-    console.log("✅ Texto extraído. Comprimento:", text.length);
-    
-    console.log("📦 Parseando JSON...");
-    let paymentData;
-    try {
-      paymentData = JSON.parse(text);
-      console.log("✅ JSON parseado!");
-    } catch (parseError) {
-      const msg = parseError instanceof Error ? parseError.message : String(parseError);
-      console.error("❌ Erro ao parsear JSON:", msg);
-      return;
-    }
-    
-    console.log("📊 Status do pagamento:", paymentData.status);
-
-    // ✅ VERIFICAR STATUS
-    if (paymentData.status !== "approved") {
-      console.log("⏸️ Status não é 'approved'. Atual:", paymentData.status);
-      return;
-    }
-
-    console.log("✅ Status é APPROVED! Atualizando banco...");
-    console.log("Update: status='pago', payment_id='" + paymentid + "'");
-
-    const { data: updatedRifas, error } = await supabase
-      .from("rifas")
-      .update({
-        status: "pago",
-        payment_info: paymentData,
-      })
-      .eq("payment_id", paymentid)
-      .select("email, numero_escolhido, id");
-
-    if (error) {
-      console.error("❌ Erro Supabase:", error.message);
-      return;
-    }
-
-    const linhasAtualizadas = updatedRifas?.length ?? 0;
-    console.log(`✅ Sucesso! ${linhasAtualizadas} linhas atualizadas`);
-
-    // ✅ ENVIAR EMAIL
-    if (updatedRifas && updatedRifas.length > 0) {
-      const email = updatedRifas[0].email;
-      const numerosExtraidos: unknown[] = updatedRifas.flatMap(
-        (r: { numero_escolhido?: unknown }) => {
-          if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) {
-            return [r.numero_escolhido];
-          }
-          return [];
-        }
-      );
-
-      console.log("📧 Enviando email para:", email);
-      try {
-        await enviarEmailBrevo(email, numerosExtraidos, paymentid);
-        console.log("✅ Email enviado!");
-      } catch (emailError) {
-        console.error("⚠️ Erro ao enviar email:", emailError instanceof Error ? emailError.message : String(emailError));
-      }
-    }
-
-    const totalTime = Date.now() - startTime;
-    console.log(`✅ WEBHOOK SUCESSO (${totalTime}ms)`);
-
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error("❌ ERRO CRÍTICO:", errorMsg);
-    if (err instanceof Error) {
-      console.error("Stack:", err.stack);
-    }
-  }
+// Exportar função para usar em outros lugares
+export async function enviarEmailBrevoExportado(
+  email: string,
+  numeros: unknown[],
+  paymentId: string
+) {
+  return enviarEmailBrevo(email, numeros, paymentId);
 }
