@@ -58,16 +58,16 @@ export async function GET(request: Request) {
       .limit(10); // Processar até 10 por vez
 
     if (queueError) {
-      console.error("❌ Erro ao buscar fila:", queueError);
+      console.error(" Erro ao buscar fila:", queueError);
       return NextResponse.json({ error: queueError.message }, { status: 500 });
     }
 
     if (!pendingQueue || pendingQueue.length === 0) {
-      console.log("ℹ️ Nenhum pagamento pendente para processar");
+      console.log("ℹ Nenhum pagamento pendente para processar");
       return NextResponse.json({ processed: 0 }, { status: 200 });
     }
 
-    console.log(`📦 Processando ${pendingQueue.length} webhooks pendentes`);
+    console.log(` Processando ${pendingQueue.length} webhooks pendentes`);
 
     let processed = 0;
     let successful = 0;
