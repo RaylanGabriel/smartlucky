@@ -11,7 +11,7 @@ type MercadoPagoWebhook = {
 async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: string) {
   try {
     const BREVO_API_KEY = process.env.BREVO_API_KEY;
-    
+
     if (!BREVO_API_KEY) {
       console.error("Chave do Brevo não configurada no .env");
       return;
@@ -20,13 +20,13 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
     const response = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
-        "accept": "application/json",
+        accept: "application/json",
         "api-key": BREVO_API_KEY,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        sender: { name: "SmartLucky Rifa", email: "raylanmiranda1@gmail.com" }, 
-        to: [{ email: email }],
+        sender: { name: "SmartLucky Rifa", email: "raylanmiranda1@gmail.com" },
+        to: [{ email }],
         subject: "🎉 Seus números da sorte chegaram!",
         htmlContent: `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; background-color: #09090A; color: #ffffff; padding: 20px; border-radius: 10px;">
@@ -50,7 +50,7 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
       const errorData = await response.json();
       console.error("Erro ao enviar e-mail Brevo:", errorData);
     } else {
-      console.log("E-mail de confirmação enviado para:", email);
+      console.log("E-mail enviado para:", email);
     }
   } catch (err) {
     console.error("Erro crítico no envio de e-mail:", err);
@@ -59,20 +59,29 @@ async function enviarEmailBrevo(email: string, numeros: unknown[], paymentId: st
 
 export async function POST(request: Request) {
   try {
+    // LOG INICIAL
     const bodyText = await request.text();
-    console.log("Webhook raw body:", bodyText);
+    console.log("=== WEBHOOK MERCADO PAGO ===");
+    console.log("Timestamp:", new Date().toISOString());
+    console.log("Webhook raw body:", bodyText.substring(0, 200));
 
     let body: MercadoPagoWebhook | null = null;
+
     if (bodyText.trim().length > 0) {
       try {
-        body = JSON.parse(bodyText) as MercadoPagoWebhook;
-      } catch {
-        // Mercado Pago sometimes sends pseudo-JSON (no quotes). Extraia o id diretamente.
+        body = JSON.parse(bodyText);
+        console.log("JSON parseado com sucesso:", JSON.stringify(body).substring(0, 200));
+      } catch (parseError) {
+        console.error("Erro ao parsear JSON:", parseError);
+        console.log("Tentando fallback regex...");
+
         const idFromData = bodyText.match(/data\s*:\s*\{[^}]*id\s*:\s*"?([0-9]+)"?/);
-        const idFromRoot = bodyText.match(/\bid\s*:\s*"?([0-9]+)"?/);
-        const typeMatch = bodyText.match(/\btype\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
-        const actionMatch = bodyText.match(/\baction\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
+        const idFromRoot = bodyText.match(/id\s*:\s*"?([0-9]+)"?/);
+        const typeMatch = bodyText.match(/type\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
+        const actionMatch = bodyText.match(/action\s*:\s*"?([a-zA-Z0-9_\.]+)"?/);
+
         const parsedId = idFromData?.[1] ?? idFromRoot?.[1];
+
         if (parsedId) {
           body = {
             id: parsedId,
@@ -80,49 +89,85 @@ export async function POST(request: Request) {
             action: actionMatch?.[1],
             data: { id: parsedId },
           };
+          console.log("Fallback regex bem-sucedido:", body);
         }
       }
     }
 
     if (!body) {
-      console.warn("Webhook payload vazio ou inválido:", bodyText);
+      console.warn("Webhook inválido - nenhum body encontrado");
       return NextResponse.json({ message: "Webhook inválido" }, { status: 400 });
     }
 
-    const paymentid = body.data?.id ?? body.id;
+    console.log("Body type:", body.type);
+    console.log("Body action:", body.action);
+
+    // VERIFICAR TIPO
+    if (body.type && body.type !== "payment") {
+      console.log("Evento ignorado - tipo não é payment:", body.type);
+      return NextResponse.json({ message: "Evento ignorado" }, { status: 200 });
+    }
+
+    // EXTRAIR PAYMENT ID COM VALIDAÇÃO
+    let paymentid = body.data?.id ?? body.id;
+    console.log("Payment ID extraído (raw):", paymentid, "tipo:", typeof paymentid);
 
     if (!paymentid) {
-      console.warn("Webhook recebido sem payment id", body);
+      console.warn("Webhook sem payment_id válido");
       return NextResponse.json({ message: "Webhook sem id" }, { status: 400 });
     }
 
+    // GARANTIR STRING
+    paymentid = String(paymentid);
+    console.log("Payment ID (string):", paymentid);
+
+    // VERIFICAR AMBIENTE
+    if (!process.env.MP_ACCESS_TOKEN) {
+      console.error("ERRO: MP_ACCESS_TOKEN não configurado!");
+      return NextResponse.json({ message: "Servidor não configurado" }, { status: 500 });
+    }
+
+    // BUSCAR STATUS NO MERCADO PAGO COM MELHOR TRATAMENTO DE ERRO
+    console.log("Consultando Mercado Pago para ID:", paymentid);
     const response = await fetch(
       `https://api.mercadopago.com/v1/payments/${paymentid}`,
       {
         headers: {
           Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
         },
-      },
+      }
     );
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
-      console.error("Erro ao buscar pagamento MP:", response.status, errorBody);
-      return NextResponse.json({ message: "Erro ao consultar pagamento" }, { status: response.status === 401 ? 401 : 500 });
+      console.error("Erro ao buscar pagamento MP:", {
+        status: response.status,
+        error: errorBody,
+      });
+
+      // Se for 404, o arquivo não existe no MP - erro permanente
+      if (response.status === 404) {
+        return NextResponse.json({ message: "Pagamento não encontrado no MP" }, { status: 404 });
+      }
+
+      return NextResponse.json({ message: "Erro ao consultar pagamento" }, { status: 500 });
     }
 
     const paymentData = await response.json();
-    let statusTraduzido = paymentData.status;
+    console.log("Status retornado do MP:", paymentData.status);
+    console.log("Payment data keys:", Object.keys(paymentData).slice(0, 10));
 
-    if (paymentData.status === "approved") {
-      statusTraduzido = "pago";
-    } else if (paymentData.status === "pending") {
-      statusTraduzido = "pendente";
-    } else if (paymentData.status === "rejected") {
-      statusTraduzido = "recusado";
-    } else if (paymentData.status === "in_process") {
-      statusTraduzido = "em_processamento";
+    // VERIFICAR STATUS
+    if (paymentData.status !== "approved") {
+      console.log("Pagamento não aprovado - status atual:", paymentData.status);
+      return NextResponse.json({ message: "Pagamento não aprovado ainda" }, { status: 200 });
     }
+
+    const statusTraduzido = "pago";
+    console.log("Status OK - Atualizando banco com status:", statusTraduzido);
+
+    // QUERY COM .EQ() E LOG DETALHADO
+    console.log("Executando query Supabase com payment_id:", paymentid);
 
     const { data: updatedRifas, error } = await supabase
       .from("rifas")
@@ -130,30 +175,69 @@ export async function POST(request: Request) {
         status: statusTraduzido,
         payment_info: paymentData,
       })
-      .eq("payment_id", String(paymentid))
-      .select("email, numero_escolhido");
+      .eq("payment_id", paymentid)
+      .select("email, numero_escolhido, id");
 
+    // LOG DE ERRO DO SUPABASE COM DETALHES
     if (error) {
-      console.error("Erro Supabase:", error);
+      console.error("Erro Supabase completo:", {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
       return NextResponse.json({ message: "Erro no banco" }, { status: 500 });
     }
 
-    if (updatedRifas && Array.isArray(updatedRifas) && updatedRifas.length > 0) {
-      const first = updatedRifas[0];
-      const email = first.email;
-      const numerosExtraidos: unknown[] = updatedRifas.flatMap((r: { numero_escolhido?: unknown }) => {
-        if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) return [r.numero_escolhido];
-        return [];
-      });
+    console.log("Resultado da atualização:", {
+      linhasAfetadas: updatedRifas?.length ?? 0,
+      dados: updatedRifas,
+    });
 
-      if (statusTraduzido === "pago" && email) {
-        await enviarEmailBrevo(email, numerosExtraidos, String(paymentid));
+    // VERIFICAR SE ATUALIZOU ALGUMA LINHA
+    if (!updatedRifas || updatedRifas.length === 0) {
+      console.warn("AVISO: Nenhuma linha foi atualizada no Supabase para payment_id:", paymentid);
+      console.warn("Possível causa: payment_id não existe no banco ou em formato diferente");
+
+      // Fazer debug - buscar o registro para ver qual é o payment_id salvo
+      const { data: debugData } = await supabase
+        .from("rifas")
+        .select("id, payment_id, status")
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+      console.log("Últimos 5 registros do banco (debug):", debugData);
+
+      return NextResponse.json({ message: "Nenhum registro atualizado" }, { status: 200 });
+    }
+
+    // ENVIAR EMAIL
+    if (updatedRifas && updatedRifas.length > 0) {
+      const email = updatedRifas[0].email;
+      console.log("Enviando email para:", email);
+
+      const numerosExtraidos: unknown[] = updatedRifas.flatMap(
+        (r: { numero_escolhido?: unknown }) => {
+          if (r.numero_escolhido !== undefined && r.numero_escolhido !== null) {
+            return [r.numero_escolhido];
+          }
+          return [];
+        }
+      );
+
+      if (email) {
+        await enviarEmailBrevo(email, numerosExtraidos, paymentid);
       }
     }
 
+    console.log("=== WEBHOOK PROCESSADO COM SUCESSO ===");
     return NextResponse.json({ message: "Recebido" }, { status: 200 });
+
   } catch (err) {
-    console.error("Erro Webhook:", err);
+    console.error("Erro Webhook crítico:", err);
+    if (err instanceof Error) {
+      console.error("Stack trace:", err.stack);
+    }
     return NextResponse.json({ message: "Erro interno" }, { status: 500 });
   }
 }
