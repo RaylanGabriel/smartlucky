@@ -103,7 +103,7 @@ export async function GET(request: Request) {
         }
 
         const paymentData = await response.json();
-        console.log(`  📊 Status: ${paymentData.status}`);
+        console.log(`   Status: ${paymentData.status}`);
 
         //  VERIFICAR STATUS
         if (paymentData.status !== "approved") {
