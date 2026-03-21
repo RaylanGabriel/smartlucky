@@ -70,13 +70,27 @@ function PagamentoContent() {
   const [reserva, setReserva] = useState<{ created_at: string } | null>(null);
 
   /* ===========================
-     Checa status no Supabase
+     Checa status no Supabase e polling do servidor
   =========================== */
   useEffect(() => {
     if (!paymentId) return;
 
     const checkStatus = async () => {
       try {
+        // Primeiro, checa com o novo endpoint que processa pagamentos
+        // Este endpoint tenta processar o pagamento se estiver pendente
+        const apiResponse = await fetch(
+          `/api/webhooks/check-payment?payment_id=${paymentId}`
+        );
+        if (apiResponse.ok) {
+          const apiData = await apiResponse.json();
+          if (apiData.status === "approved") {
+            setStatus("approved");
+            return;
+          }
+        }
+
+        // Fallback: checa direto no Supabase
         const { data, error } = await supabase
           .from("rifas")
           .select("status, created_at")
@@ -106,6 +120,9 @@ function PagamentoContent() {
 
     checkStatus();
 
+    // Poll a cada 5 segundos para processar pagamentos pendentes
+    const pollingInterval = setInterval(checkStatus, 5000);
+
     const channel = supabase
       .channel("check-pagamento")
       .on(
@@ -126,6 +143,7 @@ function PagamentoContent() {
       .subscribe();
 
     return () => {
+      clearInterval(pollingInterval);
       supabase.removeChannel(channel);
     };
   }, [paymentId]);

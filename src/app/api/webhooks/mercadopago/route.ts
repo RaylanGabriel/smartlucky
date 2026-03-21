@@ -93,7 +93,7 @@ export async function POST(request: Request) {
 
     console.log("Payment ID:", String(paymentid));
 
-    // ✅ SALVAR NA FILA (NÃO PROCESSA AQUI)
+    //  SALVAR NA FILA (NÃO PROCESSA AQUI)
     const queueEntry = {
       payment_id: String(paymentid),
       status: "pending",
