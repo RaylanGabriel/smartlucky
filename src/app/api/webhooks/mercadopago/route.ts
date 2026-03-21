@@ -141,16 +141,10 @@ async function processarWebhookEmBackground(paymentid: string) {
     
     let response;
     try {
-      console.log("Iniciando fetch para API MP...");
+      console.log("⏳ Iniciando fetch para API MP (com timeout de 5s)...");
       
-      // Usar timeout mais agressivo
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        console.error("⏱️ TIMEOUT - Abortando fetch após 8 segundos");
-        controller.abort();
-      }, 8000);
-      
-      response = await fetch(
+      // Usar Promise.race para timeout mais confiável
+      const fetchPromise = fetch(
         `https://api.mercadopago.com/v1/payments/${paymentid}`,
         {
           method: "GET",
@@ -158,21 +152,24 @@ async function processarWebhookEmBackground(paymentid: string) {
             "Authorization": `Bearer ${process.env.MP_ACCESS_TOKEN}`,
             "Content-Type": "application/json",
           },
-          signal: controller.signal,
         }
       );
-      
-      clearTimeout(timeoutId);
+
+      // Criar timeout promise
+      const timeoutPromise = new Promise<Response>((_, reject) => {
+        setTimeout(() => {
+          console.error("⏱️ TIMEOUT! Fetch excedeu 5 segundos");
+          reject(new Error("FETCH_TIMEOUT"));
+        }, 5000);
+      });
+
+      // Race entre fetch e timeout
+      response = await Promise.race([fetchPromise, timeoutPromise]);
       console.log("✅ Fetch completado. Status HTTP:", response.status);
       
     } catch (fetchError) {
       const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
       console.error("❌ Erro ao fazer fetch para MP:", errorMsg);
-      
-      // Se foi abortado, retorna
-      if (errorMsg.includes("abort")) {
-        console.error("❌ Fetch foi abortado - possível timeout");
-      }
       return;
     }
 
@@ -188,7 +185,7 @@ async function processarWebhookEmBackground(paymentid: string) {
       return;
     }
 
-    console.log("Parseando resposta JSON...");
+    console.log("📦 Parseando resposta JSON...");
     let paymentData;
     try {
       paymentData = await response.json();
@@ -198,7 +195,7 @@ async function processarWebhookEmBackground(paymentid: string) {
       return;
     }
     
-    console.log("Status retornado do MP:", paymentData.status);
+    console.log("📊 Status retornado do MP:", paymentData.status);
 
     // ✅ VERIFICAR STATUS
     if (paymentData.status !== "approved") {
