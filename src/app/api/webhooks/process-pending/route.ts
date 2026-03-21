@@ -48,7 +48,7 @@ export async function GET(request: Request) {
   try {
     console.log("⏰ [CRON] Iniciando processamento de fila de webhooks");
 
-    // ✅ BUSCAR PENDENTES
+    //  BUSCAR PENDENTES
     const { data: pendingQueue, error: queueError } = await supabase
       .from("webhook_queue")
       .select("*")
@@ -72,7 +72,7 @@ export async function GET(request: Request) {
     let processed = 0;
     let successful = 0;
 
-    // ✅ PROCESSAR CADA ITEM
+    //  PROCESSAR CADA ITEM
     for (const queueItem of pendingQueue) {
       processed++;
       const paymentid = queueItem.payment_id;
@@ -86,7 +86,7 @@ export async function GET(request: Request) {
           .update({ attempts: (queueItem.attempts || 0) + 1 })
           .eq("payment_id", paymentid);
 
-        // ✅ CONSULTAR MP
+        //  CONSULTAR MP
         console.log(`  ⏳ Consultando Mercado Pago...`);
         const response = await fetch(
           `https://api.mercadopago.com/v1/payments/${paymentid}`,
@@ -105,14 +105,14 @@ export async function GET(request: Request) {
         const paymentData = await response.json();
         console.log(`  📊 Status: ${paymentData.status}`);
 
-        // ✅ VERIFICAR STATUS
+        //  VERIFICAR STATUS
         if (paymentData.status !== "approved") {
           console.log(`  ⏸️ Não aprovado. Aguardando...`);
           continue;
         }
 
-        // ✅ ATUALIZAR RIFAS
-        console.log(`  ✅ Atualizando banco...`);
+        //  ATUALIZAR RIFAS
+        console.log(`   Atualizando banco...`);
         const { data: updatedRifas, error: updateError } = await supabase
           .from("rifas")
           .update({
@@ -128,10 +128,10 @@ export async function GET(request: Request) {
         }
 
         console.log(
-          `  ✅ ${updatedRifas?.length ?? 0} linhas atualizadas`
+          `   ${updatedRifas?.length ?? 0} linhas atualizadas`
         );
 
-        // ✅ ENVIAR EMAIL
+        //  ENVIAR EMAIL
         if (updatedRifas && updatedRifas.length > 0) {
           const email = updatedRifas[0].email;
           const numerosExtraidos: unknown[] = updatedRifas.flatMap(
@@ -147,14 +147,14 @@ export async function GET(request: Request) {
           await enviarEmailBrevo(email, numerosExtraidos, paymentid);
         }
 
-        // ✅ MARCAR COMO PROCESSADO
+        //  MARCAR COMO PROCESSADO
         await supabase
           .from("webhook_queue")
           .update({ status: "processed" })
           .eq("payment_id", paymentid);
 
         successful++;
-        console.log(`  ✅ [${paymentid}] SUCESSO!\n`);
+        console.log(`   [${paymentid}] SUCESSO!\n`);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`  ❌ Erro crítico: ${errorMsg}`);
@@ -162,7 +162,7 @@ export async function GET(request: Request) {
     }
 
     const summary = `Processados: ${processed}, Sucesso: ${successful}`;
-    console.log(`✅ [CRON] ${summary}`);
+    console.log(` [CRON] ${summary}`);
 
     return NextResponse.json(
       { processed, successful, message: summary },
@@ -170,7 +170,7 @@ export async function GET(request: Request) {
     );
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error("❌ [CRON] Erro geral:", errorMsg);
+    console.error(" [CRON] Erro geral:", errorMsg);
     return NextResponse.json({ error: errorMsg }, { status: 500 });
   }
 }
