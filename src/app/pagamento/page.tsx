@@ -70,59 +70,79 @@ function PagamentoContent() {
   const [reserva, setReserva] = useState<{ created_at: string } | null>(null);
 
   /* ===========================
-     Checa status no Supabase e polling do servidor
+     CHECK STATUS (CORRIGIDO)
   =========================== */
   useEffect(() => {
     if (!paymentId) return;
 
+    let interval: NodeJS.Timeout | null = null;
+    let tentativas = 0;
+    const MAX_TENTATIVAS = 20;
+
     const checkStatus = async () => {
       try {
-        // Primeiro, checa com o novo endpoint que processa pagamentos
-        // Este endpoint tenta processar o pagamento se estiver pendente
+        tentativas++;
+
+        // 🔥 1. API (processa pagamento)
         const apiResponse = await fetch(
           `/api/webhooks/check-payment?payment_id=${paymentId}`
         );
+
         if (apiResponse.ok) {
           const apiData = await apiResponse.json();
+
           if (apiData.status === "approved") {
             setStatus("approved");
+
+            if (interval) {
+              clearInterval(interval);
+              interval = null;
+            }
+
             return;
           }
         }
 
-        // Fallback: checa direto no Supabase
-        const { data, error } = await supabase
+        // 🔄 2. Supabase fallback
+        const { data } = await supabase
           .from("rifas")
           .select("status, created_at")
           .eq("payment_id", paymentId);
 
-        if (error) {
-          console.error("Erro Supabase:", error.message);
-          return;
-        }
-
         if (data) {
-          // Pode retornar um array de linhas (uma por número) ou um único objeto
           const first = Array.isArray(data) ? data[0] : data;
           setReserva(first as { created_at: string });
+
           if (first?.status === "approved" || first?.status === "pago") {
             setStatus("approved");
+
+            if (interval) {
+              clearInterval(interval);
+              interval = null;
+            }
+
+            return;
           }
         }
-      } catch (err: unknown) {
-        if (err instanceof Error) {
-          console.error("Erro crítico:", err.message);
-        } else {
-          console.error("Erro crítico desconhecido");
+
+        // 🛑 timeout polling
+        if (tentativas >= MAX_TENTATIVAS && interval) {
+          console.log("⏱️ Timeout polling atingido");
+          clearInterval(interval);
+          interval = null;
         }
+      } catch (err) {
+        console.error("Erro ao verificar status:", err);
       }
     };
 
+    // primeira execução
     checkStatus();
 
-    // Poll a cada 5 segundos para processar pagamentos pendentes
-    const pollingInterval = setInterval(checkStatus, 5000);
+    // polling
+    interval = setInterval(checkStatus, 5000);
 
+    // ⚡ realtime (principal)
     const channel = supabase
       .channel("check-pagamento")
       .on(
@@ -135,21 +155,29 @@ function PagamentoContent() {
         },
         (payload) => {
           const newStatus = payload.new.status as string;
+
           if (newStatus === "approved" || newStatus === "pago") {
+            console.log("⚡ Realtime detectou pagamento aprovado");
+
             setStatus("approved");
+
+            if (interval) {
+              clearInterval(interval);
+              interval = null;
+            }
           }
         }
       )
       .subscribe();
 
     return () => {
-      clearInterval(pollingInterval);
+      if (interval) clearInterval(interval);
       supabase.removeChannel(channel);
     };
   }, [paymentId]);
 
   /* ===========================
-     Pagamento aprovado
+     PAGAMENTO APROVADO
   =========================== */
   if (status === "approved") {
     return (
@@ -174,7 +202,7 @@ function PagamentoContent() {
   }
 
   /* ===========================
-     Tela de pagamento
+     TELA DE PAGAMENTO
   =========================== */
   return (
     <>
@@ -261,7 +289,9 @@ function PagamentoContent() {
   );
 }
 
-
+/* ===========================
+   PAGE
+=========================== */
 export default function PagamentoPage() {
   return (
     <Suspense
