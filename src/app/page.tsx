@@ -1,19 +1,36 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Script from "next/script";
+import { useState, useEffect, useCallback } from "react";
 import NumeroRifa, { StatusNumero } from "@/components/NumeroRifa";
 import { styles } from "./styles";
-import { supabase } from "@/lib/supabase";
 import { User, Smartphone, CreditCard, Mail } from "lucide-react";
 import { useRouter } from "next/navigation";
+import {
+  LIMITE_SELECAO,
+  NUMEROS_POR_PAGINA,
+  TOTAL_NUMEROS,
+  VALOR_UNITARIO,
+} from "@/lib/config";
+
+const STORAGE_KEY = "@rifa:selecionados";
+const INTERVALO_ATUALIZACAO_MS = 10_000;
+
+function lerSelecaoSalva(): number[] {
+  try {
+    const salvo = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+    if (!Array.isArray(salvo)) return [];
+    return salvo
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= TOTAL_NUMEROS)
+      .slice(0, LIMITE_SELECAO);
+  } catch {
+    return [];
+  }
+}
 
 export default function Home() {
   const router = useRouter();
 
-  
   // ESTADOS PRINCIPAIS
-  
   const [nome, setNome] = useState("");
   const [mail, setMail] = useState("");
   const [telefone, setTelefone] = useState("");
@@ -23,80 +40,44 @@ export default function Home() {
   const [carregado, setCarregado] = useState(false);
   const [estaProcessando, setEstaProcessando] = useState(false);
 
- 
-  // CONFIGURAÇÕES DA RIFA
-  
-  const totalNumeros = 500;
-  const numerosPorPagina = 100;
-  const totalPaginas = Math.ceil(totalNumeros / numerosPorPagina);
-  const LIMITE_SELECAO = 10;
-  const VALOR_UNITARIO = 1;
+  const numerosPorPagina = NUMEROS_POR_PAGINA;
+  const totalPaginas = Math.ceil(TOTAL_NUMEROS / numerosPorPagina);
 
-  
-  // CARREGA RESERVAS ATIVAS
-   
-  const carregarReservas = async () => {
-    const { data } = await supabase
-      .from("rifas")
-      .select("numero_escolhido")
-      .in("status", ["vendido", "pago", "em_processamento", "pendente"]);
-
-    if (data) {
-      setNumerosOcupados(data.map((item) => item.numero_escolhido));
+  // CARREGA NÚMEROS OCUPADOS (via API, sem expor dados pessoais)
+  const carregarReservas = useCallback(async () => {
+    try {
+      const res = await fetch("/api/numeros", { cache: "no-store" });
+      if (!res.ok) return;
+      const { ocupados } = (await res.json()) as { ocupados: number[] };
+      setNumerosOcupados(ocupados);
+      // Remove da seleção números que outra pessoa reservou nesse meio-tempo.
+      setSelecionados((prev) => prev.filter((n) => !ocupados.includes(n)));
+    } catch {
+      // Falha de rede: tenta de novo no próximo ciclo.
     }
-  };
-
-  
-  // REALTIME SUPABASE
-    useEffect(() => {
-    carregarReservas();
-
-    const channel = supabase
-      .channel("rifas-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "rifas",
-        },
-        carregarReservas,
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
   }, []);
 
-  
-  // LOCAL STORAGE
-  
   useEffect(() => {
-    const salvo = localStorage.getItem("@rifa:selecionados");
-    if (salvo) setSelecionados(JSON.parse(salvo));
+    carregarReservas();
+    const intervalo = setInterval(carregarReservas, INTERVALO_ATUALIZACAO_MS);
+    return () => clearInterval(intervalo);
+  }, [carregarReservas]);
+
+  // LOCAL STORAGE
+  useEffect(() => {
+    setSelecionados(lerSelecaoSalva());
     setCarregado(true);
   }, []);
 
   useEffect(() => {
-    if (carregado) {
-      localStorage.setItem("@rifa:selecionados", JSON.stringify(selecionados));
+    if (!carregado) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(selecionados));
+    } catch {
+      // Armazenamento indisponível (modo privado etc.).
     }
   }, [selecionados, carregado]);
 
-  // INICIALIZA MERCADO PAGO (DEVICE ID)
-  
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.MercadoPago) {
-      new window.MercadoPago(process.env.NEXT_PUBLIC_MP_PUBLIC_KEY!, {
-        locale: "pt-BR",
-      });
-    }
-  }, []);
-
- 
-  
-  
   const gerenciarSelecao = (num: number) => {
     if (numerosOcupados.includes(num)) return;
 
@@ -118,9 +99,7 @@ export default function Home() {
     setEstaProcessando(true);
 
     try {
-      const valorTotal = selecionados.length * VALOR_UNITARIO;
-
-      // Cria pagamento no backend
+      // O servidor valida os dados, reserva os números e calcula o valor.
       const res = await fetch("/api/create-payment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -129,34 +108,29 @@ export default function Home() {
           telefone,
           mail,
           numeros: selecionados,
-          valorTotal,
         }),
       });
 
-      const checkout = await res.json();
-      if (!checkout.id) throw new Error("Erro ao gerar pagamento.");
+      const checkout = await res.json().catch(() => ({}));
 
-      // Salva reservas
-      const dados = selecionados.map((num) => ({
-        numero_escolhido: num,
-        status: "pendente",
-        nome,
-        email: mail,
-        telefone,
-        payment_id: String(checkout.id),
-      }));
+      if (res.status === 409) {
+        alert(checkout.error ?? "Alguns números já foram reservados.");
+        await carregarReservas();
+        return;
+      }
+      if (!res.ok || !checkout.id) {
+        alert(checkout.error ?? "Erro ao processar pagamento.");
+        return;
+      }
 
-      const { error } = await supabase.from("rifas").upsert(dados);
-      if (error) throw error;
-
-      localStorage.removeItem("@rifa:selecionados");
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {}
       setSelecionados([]);
 
-      router.push(
-        `/pagamento?id=${checkout.id}&code=${encodeURIComponent(checkout.qr_code)}`,
-      );
-    } catch (err) {
-      alert("Erro ao processar pagamento.");
+      router.push(`/pagamento?id=${encodeURIComponent(checkout.id)}`);
+    } catch {
+      alert("Erro de conexão ao processar pagamento.");
     } finally {
       setEstaProcessando(false);
     }
@@ -172,12 +146,7 @@ export default function Home() {
 
   return (
     <>
-      {/* SDK MERCADO PAGO (OBRIGATÓRIO) */}
-      <Script
-        src="https://sdk.mercadopago.com/js/v2"
-        strategy="afterInteractive"
-      />
-
+      {/* O SDK do Mercado Pago é carregado no layout. */}
       <main className={`${styles.main} overflow-x-hidden relative min-h-screen pb-20`}>
          {/* EFEITOS DE FUNDO */}
       <div className="absolute top-[-10%] left-[-10%] w-125 h-125 bg-[#8257E5] opacity-[0.15] blur-[120px] rounded-full pointer-events-none"></div>

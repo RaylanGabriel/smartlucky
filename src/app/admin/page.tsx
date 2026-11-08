@@ -2,75 +2,48 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
 import { styles } from "@/app/styles";
 import { Trash2, ExternalLink, LogOut, CheckCircle } from "lucide-react";
 
 interface Venda {
-  id: string;
-  nome: string;
-  telefone: string;
-  status: string;
+  id: number | string;
+  numero_escolhido: number;
+  nome: string | null;
+  email: string | null;
+  telefone: string | null;
+  status: string | null;
+  payment_id: string | null;
 }
+
+const INTERVALO_ATUALIZACAO_MS = 15_000;
 
 export default function AdminPage() {
   const [vendas, setVendas] = useState<Venda[]>([]);
   const router = useRouter();
 
-  /**
-   * 🔹 Busca vendas (movida pra cima + useCallback)
-   */
+  /** Busca vendas pela API protegida. 401 = sessão inválida → login. */
   const buscarVendas = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("rifas")
-      .select("*")
-      .order("id", { ascending: true });
-
-    if (!error && data) {
-      setVendas(data as Venda[]);
+    try {
+      const res = await fetch("/api/admin/vendas", { cache: "no-store" });
+      if (res.status === 401) {
+        router.push("/admin/login");
+        return;
+      }
+      if (!res.ok) return;
+      const data = (await res.json()) as { vendas: Venda[] };
+      setVendas(data.vendas);
+    } catch {
+      // Falha de rede: tenta de novo no próximo ciclo.
     }
-  }, []);
+  }, [router]);
 
-  /**
-   * 🔹 Validação de login
-   */
   useEffect(() => {
-    const isLogged = localStorage.getItem("smartlucky_admin");
-    if (!isLogged) {
-      router.push("/admin/login");
-      return;
-    }
     buscarVendas();
-  }, [router, buscarVendas]);
-
-  /**
-   * 🔹 Realtime (evento controlado)
-   */
-  useEffect(() => {
-    const channel = supabase
-      .channel("rifas-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE", 
-          schema: "public",
-          table: "rifas",
-        },
-        () => {
-          buscarVendas();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    const intervalo = setInterval(buscarVendas, INTERVALO_ATUALIZACAO_MS);
+    return () => clearInterval(intervalo);
   }, [buscarVendas]);
 
-  /**
-   * 🔹 Executar ações
-   */
-  async function executarAcao(id: string, acao: "excluir" | "vender") {
+  async function executarAcao(id: Venda["id"], acao: "excluir" | "vender") {
     const msg =
       acao === "excluir"
         ? "Liberar número e apagar reserva?"
@@ -79,35 +52,39 @@ export default function AdminPage() {
     if (!confirm(msg)) return;
 
     try {
-      const res = await fetch("/admin/acoes", { // ✅ URL corrigida
+      const res = await fetch("/api/admin/acoes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, action: acao }),
       });
 
-      if (!res.ok) {
-        throw new Error("Erro HTTP");
+      if (res.status === 401) {
+        router.push("/admin/login");
+        return;
       }
 
-      const result = await res.json();
+      const result = await res.json().catch(() => ({}));
 
-      if (result.success) {
+      if (res.ok && result.success) {
         if (acao === "excluir") {
           setVendas((prev) => prev.filter((v) => v.id !== id));
         } else {
           buscarVendas();
         }
       } else {
-        alert("Erro: " + result.error);
+        alert("Erro: " + (result.error ?? "falha ao executar ação"));
       }
-    } catch (err) {
+    } catch {
       alert("Erro ao conectar com o servidor.");
     }
   }
 
-  const handleLogout = () => {
-    localStorage.removeItem("smartlucky_admin");
-    router.push("/admin/login");
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/admin/logout", { method: "POST" });
+    } finally {
+      router.push("/admin/login");
+    }
   };
 
   return (
@@ -152,16 +129,17 @@ export default function AdminPage() {
                 vendas.map((venda) => (
                   <tr key={venda.id} className="hover:bg-white/5 transition-colors">
                     <td className="p-4 font-black text-[#8257E5] text-lg">
-                      #{String(venda.id).padStart(2, "0")}
+                      #{String(venda.numero_escolhido).padStart(2, "0")}
                     </td>
 
                     <td className="p-4">
                       <div className="font-bold text-white uppercase">
-                        {venda.nome}
+                        {venda.nome ?? "—"}
                       </div>
+                      <div className="text-gray-500 text-xs">{venda.email}</div>
                       <div className="flex items-center gap-2">
                         <span className="text-gray-500 text-xs">
-                          {venda.telefone}
+                          {venda.telefone ?? ""}
                         </span>
                         <span
                           className={`text-[9px] px-1.5 rounded border ${
@@ -176,14 +154,17 @@ export default function AdminPage() {
                     </td>
 
                     <td className="p-4 text-right space-x-2">
-                      <a
-                        href={`https://wa.me/55${venda.telefone.replace(/\D/g, "")}`}
-                        target="_blank"
-                        className="inline-block p-2 text-green-500 hover:bg-green-500/10 rounded-lg"
-                        title="WhatsApp"
-                      >
-                        <ExternalLink size={18} />
-                      </a>
+                      {venda.telefone && (
+                        <a
+                          href={`https://wa.me/55${venda.telefone.replace(/\D/g, "")}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block p-2 text-green-500 hover:bg-green-500/10 rounded-lg"
+                          title="WhatsApp"
+                        >
+                          <ExternalLink size={18} />
+                        </a>
+                      )}
 
                       {venda.status !== "pago" && (
                         <button

@@ -7,22 +7,33 @@ import { Lock, User } from "lucide-react";
 export default function LoginPage() {
   const [usuario, setUsuario] = useState("");
   const [senha, setSenha] = useState("");
+  const [enviando, setEnviando] = useState(false);
   const router = useRouter();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (usuario === process.env.NEXT_PUBLIC_ADM_USUARIO && senha === process.env.NEXT_PUBLIC_ADM_SENHA) {
-      localStorage.setItem("smartlucky_admin", "true");
-      router.push("/admin");
-    } else {
-      alert("Credenciais inválidas!");
+    setEnviando(true);
+    try {
+      // A verificação acontece no servidor; as credenciais não ficam no bundle.
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ usuario, senha }),
+      });
+      if (res.ok) {
+        router.push("/admin");
+      } else {
+        alert("Credenciais inválidas!");
+      }
+    } catch {
+      alert("Erro ao conectar com o servidor.");
+    } finally {
+      setEnviando(false);
     }
   };
 
   return (
     <main className={`${styles.main} flex items-center justify-center`}>
-      
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-100 h-100 bg-[#8257E5] opacity-20 blur-[100px] rounded-full pointer-events-none"></div>
 
       <div className="w-full max-w-md relative z-10">
@@ -40,6 +51,7 @@ export default function LoginPage() {
               <input
                 type="text"
                 placeholder="Utilizador"
+                autoComplete="username"
                 className={`${styles.footer.input} pl-12`}
                 value={usuario}
                 onChange={(e) => setUsuario(e.target.value)}
@@ -51,14 +63,15 @@ export default function LoginPage() {
               <input
                 type="password"
                 placeholder="Senha"
+                autoComplete="current-password"
                 className={`${styles.footer.input} pl-12`}
                 value={senha}
                 onChange={(e) => setSenha(e.target.value)}
               />
             </div>
 
-            <button type="submit" className={styles.footer.btnFinalizar}>
-              Acessar Painel
+            <button type="submit" disabled={enviando} className={styles.footer.btnFinalizar}>
+              {enviando ? "Entrando..." : "Acessar Painel"}
             </button>
           </form>
         </div>

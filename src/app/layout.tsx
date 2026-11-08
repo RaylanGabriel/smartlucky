@@ -1,23 +1,11 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "SmartLucky",
   description: "Sistema de Rifas Profissional",
 };
-
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -25,10 +13,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         {children}
 
-        <Script
-          src="https://sdk.mercadopago.com/js/v2"
-          strategy="afterInteractive"
-        />
+        {/* SDK do Mercado Pago (identificação do dispositivo / antifraude). */}
+        <Script src="https://sdk.mercadopago.com/js/v2" strategy="afterInteractive" />
       </body>
     </html>
   );
