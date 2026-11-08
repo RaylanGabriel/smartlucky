@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { confirmarPagamento, paymentIdValido } from "@/lib/payments";
 import { RESERVA_MINUTOS } from "@/lib/config";
+import { dentroDoLimite, hashIp, ipDaRequest, respostaLimite } from "@/lib/rate-limit";
+
+// A página consulta a cada 5s (12/min); o limite dá folga para várias abas.
+const MAX_CONSULTAS_POR_MINUTO = 60;
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +26,11 @@ export async function GET(request: Request) {
   const paymentId = new URL(request.url).searchParams.get("payment_id");
   if (!paymentIdValido(paymentId)) {
     return NextResponse.json({ error: "payment_id inválido" }, { status: 400 });
+  }
+
+  const ipHash = hashIp(ipDaRequest(request));
+  if (!(await dentroDoLimite(`check:${ipHash}`, 60, MAX_CONSULTAS_POR_MINUTO))) {
+    return respostaLimite("Muitas consultas. Aguarde um instante.", 60);
   }
 
   try {

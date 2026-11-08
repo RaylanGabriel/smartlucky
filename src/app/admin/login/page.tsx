@@ -23,7 +23,8 @@ export default function LoginPage() {
       if (res.ok) {
         router.push("/admin");
       } else {
-        alert("Credenciais inválidas!");
+        const data = await res.json().catch(() => ({}));
+        alert(res.status === 429 ? data.error : "Credenciais inválidas!");
       }
     } catch {
       alert("Erro ao conectar com o servidor.");

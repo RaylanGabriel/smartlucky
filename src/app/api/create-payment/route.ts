@@ -5,7 +5,16 @@ import {
   cancelarPagamentoMP,
   liberarReservasExpiradas,
 } from "@/lib/payments";
-import { LIMITE_SELECAO, TOTAL_NUMEROS, VALOR_UNITARIO } from "@/lib/config";
+import {
+  JANELA_PIX_SEGUNDOS,
+  LIMITE_SELECAO,
+  MAX_NUMEROS_PENDENTES_POR_IP,
+  MAX_PIX_POR_JANELA,
+  RESERVA_MINUTOS,
+  TOTAL_NUMEROS,
+  VALOR_UNITARIO,
+} from "@/lib/config";
+import { dentroDoLimite, hashIp, ipDaRequest, respostaLimite } from "@/lib/rate-limit";
 
 type Entrada = {
   nome: string;
@@ -60,9 +69,39 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: entrada }, { status: 400 });
   }
   const { nome, mail, telefone, numeros } = entrada;
+  const ipHash = hashIp(ipDaRequest(req));
 
   try {
     const db = supabaseAdmin();
+
+    // Limite de tentativas por origem.
+    if (!(await dentroDoLimite(`pix:${ipHash}`, JANELA_PIX_SEGUNDOS, MAX_PIX_POR_JANELA))) {
+      return respostaLimite(
+        "Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.",
+        JANELA_PIX_SEGUNDOS
+      );
+    }
+
+    // Limite de números reservados e ainda não pagos pela mesma origem
+    // (impede alguém de "segurar" a rifa inteira sem pagar).
+    const inicioReservasAtivas = new Date(
+      Date.now() - RESERVA_MINUTOS * 60 * 1000
+    ).toISOString();
+    const { count: pendentesDaOrigem, error: pendentesError } = await db
+      .from("rifas")
+      .select("id", { count: "exact", head: true })
+      .eq("ip_hash", ipHash)
+      .eq("status", "pendente")
+      .gte("created_at", inicioReservasAtivas);
+
+    if (pendentesError) {
+      console.error("[create-payment] Erro ao contar pendentes:", pendentesError.message);
+    } else if ((pendentesDaOrigem ?? 0) + numeros.length > MAX_NUMEROS_PENDENTES_POR_IP) {
+      return respostaLimite(
+        "Você já tem números reservados aguardando pagamento. Pague o PIX gerado ou aguarde ele expirar.",
+        RESERVA_MINUTOS * 60
+      );
+    }
 
     // Libera reservas vencidas desses números antes de checar disponibilidade.
     await liberarReservasExpiradas({ numeros, limite: LIMITE_SELECAO });
@@ -96,6 +135,7 @@ export async function POST(req: Request) {
         email: mail,
         telefone,
         payment_id: idTemporario,
+        ip_hash: ipHash,
       }))
     );
 
